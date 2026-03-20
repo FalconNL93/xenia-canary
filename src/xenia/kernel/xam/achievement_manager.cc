@@ -13,11 +13,19 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/achievement_backends/gpd_achievement_backend.h"
+#include "xenia/kernel/xam/achievement_backends/san_achievement_backend.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
 #include "xenia/ui/imgui_guest_notification.h"
 
 DEFINE_bool(show_achievement_notification, false,
             "Show achievement notification on screen.", "UI");
+
+DEFINE_bool(
+    san_achievement_backend, false,
+    "Enable the SteamAchievementNotifier (SAN) achievement backend. "
+    "Appends achievement events to san_events.jsonl next to the Xenia "
+    "executable so that SAN can display notifications.",
+    "UI");
 
 DEFINE_string(
     default_achievements_backend, "GPD",
@@ -35,6 +43,10 @@ AchievementManager::AchievementManager() {
   default_achievements_backend_ = std::make_unique<GpdAchievementBackend>();
 
   // Add any optional backend here.
+  if (cvars::san_achievement_backend) {
+    achievement_backends_.push_back(
+        std::make_unique<SanAchievementBackend>());
+  }
 };
 void AchievementManager::EarnAchievement(const uint32_t user_index,
                                          const uint32_t title_id,

@@ -71,7 +71,7 @@ static std::string EscapeJsonString(const std::string& s) {
 void SanAchievementBackend::EarnAchievement(const uint64_t xuid,
                                             const uint32_t title_id,
                                             const uint32_t achievement_id) {
-  const SpaInfo* spa = kernel_state()->xam_state()->spa_info();
+  SpaInfo* spa = kernel_state()->xam_state()->spa_info();
   if (!spa) {
     XELOGW("SAN: No SPA data available for title {:08X}", title_id);
     return;
@@ -107,7 +107,7 @@ void SanAchievementBackend::EarnAchievement(const uint64_t xuid,
     if (icon_out) {
       icon_out.write(reinterpret_cast<const char*>(icon_data.data()),
                      static_cast<std::streamsize>(icon_data.size()));
-      icon_path_str = xe::filesystem::path_to_utf8(icon_file);
+      icon_path_str = xe::path_to_utf8(icon_file);
     }
   }
 
@@ -142,10 +142,10 @@ void SanAchievementBackend::EarnAchievement(const uint64_t xuid,
   if (out) {
     out << line;
     XELOGI("SAN: Wrote achievement event \"{}\" to {}", ach_name,
-           xe::filesystem::path_to_utf8(events_file_));
+           xe::path_to_utf8(events_file_));
   } else {
     XELOGW("SAN: Failed to write achievement event to {}",
-           xe::filesystem::path_to_utf8(events_file_));
+           xe::path_to_utf8(events_file_));
   }
 }
 

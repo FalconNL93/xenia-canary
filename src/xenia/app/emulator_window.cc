@@ -775,6 +775,9 @@ bool EmulatorWindow::Initialize() {
     profile_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Show Profile Menu", "",
         std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
+    profile_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Test SAN Achievement", "",
+        std::bind(&EmulatorWindow::TestSanAchievement, this)));
   }
   main_menu->AddChild(std::move(profile_menu));
 
@@ -1569,6 +1572,46 @@ void EmulatorWindow::ToggleProfilesConfigDialog() {
     }
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
   }
+}
+
+void EmulatorWindow::TestSanAchievement() {
+  auto* kernel = emulator_->kernel_state();
+  if (!kernel) return;
+
+  const uint32_t title_id = emulator_->title_id();
+  if (!title_id) {
+    XELOGW("TestSanAchievement: No title is currently loaded.");
+    return;
+  }
+
+  auto* user = kernel->xam_state()->GetUserProfile(uint32_t{0});
+  if (!user) {
+    XELOGW("TestSanAchievement: No user profile in slot 0.");
+    return;
+  }
+
+  auto* mgr = kernel->xam_state()->achievement_manager();
+  const auto achievements =
+      mgr->GetTitleAchievements(user->xuid(), title_id);
+  if (achievements.empty()) {
+    XELOGW("TestSanAchievement: No achievements found for title {:08X}.",
+           title_id);
+    return;
+  }
+
+  // Use the first locked achievement so we don't re-fire an already-earned one
+  for (const auto& ach : achievements) {
+    if (!ach.IsUnlocked()) {
+      XELOGI("TestSanAchievement: Triggering achievement {} for title {:08X}.",
+             ach.achievement_id, title_id);
+      mgr->EarnAchievement(user->xuid(), title_id, ach.achievement_id);
+      return;
+    }
+  }
+
+  XELOGW("TestSanAchievement: All achievements already unlocked for title "
+         "{:08X}.",
+         title_id);
 }
 
 void EmulatorWindow::ToggleXMPConfigDialog() {

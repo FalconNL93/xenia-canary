@@ -93,6 +93,7 @@ class EmulatorWindow {
                  const xe::ui::RawImage& image);
 
   void ToggleProfilesConfigDialog();
+  void TestSanAchievement();
   void ToggleXMPConfigDialog();
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
 

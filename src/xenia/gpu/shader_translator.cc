@@ -418,7 +418,13 @@ void Shader::GatherVertexFetchInformation(
     }
   }
   if (!attrib) {
-    assert_not_zero(fetch_instr.attributes.stride);
+    if (!fetch_instr.attributes.stride) {
+      XELOGW(
+          "Shader contains a vfetch with stride 0 for fetch constant {}; "
+          "skipping vertex binding (game compatibility issue).",
+          op.fetch_constant_index());
+      return;
+    }
     VertexBinding vertex_binding;
     vertex_binding.binding_index = int(vertex_bindings_.size());
     vertex_binding.fetch_constant = op.fetch_constant_index();

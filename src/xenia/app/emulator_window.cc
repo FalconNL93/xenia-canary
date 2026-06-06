@@ -793,6 +793,10 @@ bool EmulatorWindow::Initialize() {
     profile_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Show Profile Menu", "",
         std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
+    profile_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    profile_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Sync Profile to Backend", "",
+        std::bind(&EmulatorWindow::SyncAchievementsToHttpBackend, this)));
   }
   main_menu->AddChild(std::move(profile_menu));
 
@@ -1623,6 +1627,36 @@ void EmulatorWindow::ToggleConsoleSettingsDialog() {
     } else {
       console_settings_dialog_.reset();
     }
+  }
+}
+
+void EmulatorWindow::SyncAchievementsToHttpBackend() {
+  fmt::print("[Sync] SyncAchievementsToHttpBackend called\n");
+  if (!emulator_initialized_) {
+    fmt::print("[Sync] SKIP: emulator not initialized\n");
+    return;
+  }
+
+  auto* kernel = emulator_->kernel_state();
+  if (!kernel) {
+    fmt::print("[Sync] SKIP: no kernel state\n");
+    return;
+  }
+
+  auto* am = kernel->achievement_manager();
+  auto* xam = kernel->xam_state();
+
+  bool any_profile = false;
+  for (uint8_t i = 0; i < XUserMaxUserCount; i++) {
+    const auto* profile = xam->GetUserProfile(static_cast<uint32_t>(i));
+    if (profile) {
+      any_profile = true;
+      fmt::print("[Sync] Syncing user {} (xuid={:016X})\n", i, profile->xuid());
+      am->SyncToHttpBackend(profile->xuid());
+    }
+  }
+  if (!any_profile) {
+    fmt::print("[Sync] SKIP: no signed-in user profiles found\n");
   }
 }
 

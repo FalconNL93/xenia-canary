@@ -36,11 +36,11 @@ git push myfork $my_branch
 Write-Host "Done. $my_branch is up to date with $remote/$upstream_branch." -ForegroundColor Green
 
 # Check if HEAD actually moved (i.e. new commits were merged)
-$new_head = git rev-parse HEAD
-if ($new_head -eq $before_head) {
-    Write-Host "Already up to date — skipping build." -ForegroundColor Yellow
-    exit 0
-}
+# $new_head = git rev-parse HEAD
+# if ($new_head -eq $before_head) {
+#     Write-Host "Already up to date — skipping build." -ForegroundColor Yellow
+#     exit 0
+# }
 
 Write-Host "New commits merged, building xenia..." -ForegroundColor Cyan
 uv run xenia-build.py build --config Release
@@ -49,8 +49,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$exe = "build\bin\Windows\Debug\xenia_canary.exe"
-$dest = "E:\xbox360\Emulators\Xenia-Achievements"
+$exe = "build\bin\Windows\Release\xenia_canary.exe"
+$dest = "E:\xbox360\Emulators\Xenia Canary"
 
 if (-not (Test-Path $exe)) {
     Write-Host "Build artifact not found at $exe" -ForegroundColor Red

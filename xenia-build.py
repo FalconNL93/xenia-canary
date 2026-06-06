@@ -1191,6 +1191,18 @@ class BuildCommand(BaseBuildCommand):
 
         result = super(BuildCommand, self).execute(args, pass_args, cwd)
 
+        if not result:
+            # Copy the freshly built exe to the deploy directory.
+            import shutil
+            config = args["config"].title()
+            build_dir = get_build_dir(args.get("target_arch"))
+            src_exe = os.path.join(build_dir, "bin", "Windows", config, "xenia_canary.exe")
+            deploy_dir = r"E:\xbox360\Emulators\Xenia-Achievements"
+            dst_exe = os.path.join(deploy_dir, "xenia_canary.exe")
+            if os.path.exists(src_exe) and os.path.isdir(deploy_dir):
+                shutil.copy2(src_exe, dst_exe)
+                print(f"Deployed: {dst_exe}")
+
         print_status(ResultStatus.SUCCESS if not result else ResultStatus.FAILURE)
 
         return result

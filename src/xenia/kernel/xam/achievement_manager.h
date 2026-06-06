@@ -213,6 +213,11 @@ class AchievementManager {
       const uint64_t xuid, const uint32_t title_id,
       const uint32_t achievement_id) const;
 
+  // Iterates all played titles for the user and POSTs the full achievement
+  // state to the HTTP backend (if configured). No-op if no HTTP backend is
+  // registered or the URL cvar is empty.
+  void SyncToHttpBackend(const uint64_t xuid) const;
+
  private:
   bool DoesAchievementExist(const uint32_t achievement_id) const;
   void ShowAchievementEarnedNotification(const Achievement* achievement) const;

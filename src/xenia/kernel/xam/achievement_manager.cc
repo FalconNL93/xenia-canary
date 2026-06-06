@@ -8,11 +8,14 @@
  */
 
 #include "xenia/kernel/xam/achievement_manager.h"
+#include <thread>
+#include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/achievement_backends/gpd_achievement_backend.h"
+#include "xenia/kernel/xam/achievement_backends/http_achievement_backend.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
 #include "xenia/ui/imgui_guest_notification.h"
 
@@ -25,6 +28,12 @@ DEFINE_string(
     "Possible options: GPD.",
     "Kernel");
 
+DEFINE_string(
+    http_achievement_backend_url, "",
+    "URL to POST JSON achievement data to when an achievement is unlocked. "
+    "Leave empty to disable. Example: http://localhost:8080/achievements",
+    "Kernel");
+
 DECLARE_int32(user_language);
 
 namespace xe {
@@ -35,6 +44,10 @@ AchievementManager::AchievementManager() {
   default_achievements_backend_ = std::make_unique<GpdAchievementBackend>();
 
   // Add any optional backend here.
+  if (!cvars::http_achievement_backend_url.empty()) {
+    achievement_backends_.push_back(
+        std::make_unique<HttpAchievementBackend>());
+  }
 };
 void AchievementManager::EarnAchievement(const uint32_t user_index,
                                          const uint32_t title_id,
@@ -155,6 +168,24 @@ void AchievementManager::ShowAchievementEarnedNotification(
         imgui_drawer, "Achievement unlocked", description, 0,
         kernel_state()->notification_position_);
   });
+}
+
+void AchievementManager::SyncToHttpBackend(const uint64_t xuid) const {
+  fmt::print("[Sync] SyncToHttpBackend: {} registered backend(s)\n",
+             achievement_backends_.size());
+  for (const auto& backend : achievement_backends_) {
+    auto* http_backend = dynamic_cast<HttpAchievementBackend*>(backend.get());
+    if (http_backend) {
+      fmt::print("[Sync] Found HttpAchievementBackend, dispatching to background thread\n");
+      // Run on a background thread — data-gathering takes kernel locks that
+      // would otherwise stall the UI thread.
+      std::thread([http_backend, xuid]() {
+        http_backend->SyncAchievements(xuid);
+      }).detach();
+      return;
+    }
+  }
+  fmt::print("[Sync] No HttpAchievementBackend found in backends list\n");
 }
 
 }  // namespace xam

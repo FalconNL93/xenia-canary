@@ -10,8 +10,12 @@
 #ifndef XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_ACHIEVEMENT_BACKEND_H_
 #define XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_ACHIEVEMENT_BACKEND_H_
 
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <thread>
 #include <vector>
 
 #include "xenia/kernel/xam/achievement_manager.h"
@@ -26,8 +30,8 @@ namespace xam {
 // not block emulation.
 class HttpAchievementBackend : public AchievementBackendInterface {
  public:
-  HttpAchievementBackend() = default;
-  ~HttpAchievementBackend() = default;
+  HttpAchievementBackend();
+  ~HttpAchievementBackend();
 
   void EarnAchievement(const uint64_t xuid, const uint32_t title_id,
                        const uint32_t achievement_id) override;
@@ -58,6 +62,20 @@ class HttpAchievementBackend : public AchievementBackendInterface {
   bool LoadAchievementsData(const uint64_t xuid) override { return false; }
 
  private:
+  // Posts the current game title and rich presence to <base_url>/presence.
+  // Safe to call from any thread.
+  void PostPresenceNow() const;
+
+  // Timer thread entry point — fires PostPresenceNow every 60 seconds.
+  void RunPresenceTimer();
+
+#if XE_PLATFORM_WIN32
+  std::thread presence_timer_thread_;
+  std::atomic<bool> stop_presence_timer_{false};
+  std::condition_variable presence_timer_cv_;
+  std::mutex presence_timer_mutex_;
+#endif  // XE_PLATFORM_WIN32
+
   bool SaveAchievementsData(const uint64_t xuid,
                             const uint32_t title_id) override {
     return false;

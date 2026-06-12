@@ -349,14 +349,8 @@ void HttpAchievementBackend::PostPresenceNow() const {
             continue;
           }
           const uint32_t mode_val = it->second;
-          const auto raw =
-              xlast.GetPresenceRawString(mode_val, XLanguage::kEnglish);
-          if (!raw.empty()) {
-            xe::kernel::util::AttributeStringFormatter formatter(
-                xe::to_utf8(raw), &xlast, contexts);
-            rich_presence = formatter.GetPresenceString();
+          rich_presence = fmt::format("presence_mode:{:08X}", mode_val);
             break;
-          }
         }
       }
     }
@@ -572,14 +566,8 @@ void HttpAchievementBackend::SyncAchievements(const uint64_t xuid) const {
               continue;
             }
             const uint32_t mode_val = it->second;
-            const auto raw = xlast.GetPresenceRawString(
-                mode_val, XLanguage::kEnglish);
-            if (!raw.empty()) {
-              xe::kernel::util::AttributeStringFormatter formatter(
-                  xe::to_utf8(raw), &xlast, contexts);
-              rich_presence = formatter.GetPresenceString();
-              break;
-            }
+            rich_presence = fmt::format("presence_mode:{:08X}", mode_val);
+            break;
           }
         }
       }

@@ -1842,6 +1842,9 @@ void EmulatorWindow::ToggleNetplayStatusDialog() {
       netplay_status_dialog_.reset();
     }
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+
+  }
+}
 
 void EmulatorWindow::SyncAchievementsToHttpBackend() {
   fmt::print("[Sync] SyncAchievementsToHttpBackend called\n");

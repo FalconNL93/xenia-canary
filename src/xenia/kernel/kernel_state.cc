@@ -149,6 +149,7 @@ XNKEY* KernelState::title_lan_key() const {
   return reinterpret_cast<XNKEY*>(opt_lan_key_ptr->key);
 }
 
+bool KernelState::is_title_open() const { return emulator_->is_title_open(); }
 const std::unique_ptr<xam::SpaInfo> KernelState::title_xdbf() const {
   return module_xdbf(executable_module_);
 }

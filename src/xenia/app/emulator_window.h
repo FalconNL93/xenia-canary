@@ -116,6 +116,8 @@ class EmulatorWindow {
   void ToggleNetplaySettingsDialog();
   void ToggleNetplayStatusDialog();
 
+  void SyncAchievementsToHttpBackend();
+
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
 
   // Types of button functions for hotkeys.

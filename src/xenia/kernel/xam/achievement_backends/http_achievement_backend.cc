@@ -349,8 +349,34 @@ void HttpAchievementBackend::PostPresenceNow() const {
             continue;
           }
           const uint32_t mode_val = it->second;
-          rich_presence = fmt::format("presence_mode:{:08X}", mode_val);
-            break;
+          for (const auto& property_id : presence_entry->property_bag.properties) {
+              const auto* presence_property =
+                  kernel_state()->xam_state()->user_tracker()->GetProperty(xuid, property_id);
+              if (!presence_property) {
+                continue;
+              }
+
+              const auto raw_presence =
+                  xlast.GetPresenceRawString(presence_property);
+              if (raw_presence.empty()) {
+                continue;
+              }
+
+              const auto formatter =
+                  xe::kernel::util::AttributeStringFormatter(
+                      raw_presence, &xlast, xuid);
+
+              if (!formatter.IsComplete()) {
+                continue;
+              }
+
+              rich_presence = xe::to_utf8(formatter.GetPresenceString());
+              break;
+            }
+
+            if (!rich_presence.empty()) {
+              break;
+            }
         }
       }
     }
@@ -566,8 +592,34 @@ void HttpAchievementBackend::SyncAchievements(const uint64_t xuid) const {
               continue;
             }
             const uint32_t mode_val = it->second;
-            rich_presence = fmt::format("presence_mode:{:08X}", mode_val);
-            break;
+            for (const auto& property_id : presence_entry->property_bag.properties) {
+              const auto* presence_property =
+                  kernel_state()->xam_state()->user_tracker()->GetProperty(xuid, property_id);
+              if (!presence_property) {
+                continue;
+              }
+
+              const auto raw_presence =
+                  xlast.GetPresenceRawString(presence_property);
+              if (raw_presence.empty()) {
+                continue;
+              }
+
+              const auto formatter =
+                  xe::kernel::util::AttributeStringFormatter(
+                      raw_presence, &xlast, xuid);
+
+              if (!formatter.IsComplete()) {
+                continue;
+              }
+
+              rich_presence = xe::to_utf8(formatter.GetPresenceString());
+              break;
+            }
+
+            if (!rich_presence.empty()) {
+              break;
+            }
           }
         }
       }

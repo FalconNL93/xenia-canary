@@ -1,62 +1,124 @@
 # sync-achievements.ps1
-# Fetches latest canary_experimental from origin and merges into achievements branch.
-# Run from the xenia-canary repo root.
+# Syncs AdrianCassar netplay upstream into your local netplay-achievements branch.
+# Run from the xenia-canary-netplay repo root.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$upstream_branch = 'canary_experimental'
-$my_branch = 'achievements'
-$remote = 'origin'
+$upstreamRemote = 'upstream'
+$upstreamBranch = 'netplay_canary_experimental'
+$myBranch = 'netplay-achievements'
+$pushRemote = 'origin'
 
-Write-Host "Fetching latest from $remote..." -ForegroundColor Cyan
-git fetch $remote
+$buildConfig = 'Release'
 
-$current = git rev-parse --abbrev-ref HEAD
-if ($current -ne $my_branch) {
-    Write-Host "Switching to $my_branch..." -ForegroundColor Cyan
-    git checkout $my_branch
+$artifactCandidates = @(
+    "build\bin\Windows\$buildConfig\xenia_canary_netplay.exe",
+    "build\bin\Windows\$buildConfig\xenia_canary.exe"
+)
+
+$deployDest = "E:\xbox360\Emulators\Xenia Netplay"
+
+function Invoke-Git {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]] $Arguments
+    )
+
+    git @Arguments
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($Arguments -join ' ') failed."
+    }
 }
 
-$before_head = git rev-parse HEAD
+function Invoke-Step {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Message,
 
-Write-Host "Merging $remote/$upstream_branch into $my_branch..." -ForegroundColor Cyan
-git merge "$remote/$upstream_branch" --no-edit
+        [Parameter(Mandatory = $true)]
+        [scriptblock] $Action
+    )
 
+    Write-Host $Message -ForegroundColor Cyan
+    & $Action
+}
+
+function Get-BuildArtifact {
+    foreach ($candidate in $artifactCandidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "Build artifact not found. Tried: $($artifactCandidates -join ', ')"
+}
+
+Invoke-Step "Fetching latest from $upstreamRemote..." {
+    Invoke-Git @('fetch', $upstreamRemote)
+}
+
+$currentBranch = git rev-parse --abbrev-ref HEAD
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Merge conflict! Resolve conflicts, then run:" -ForegroundColor Red
-    Write-Host "  git merge --continue" -ForegroundColor Yellow
-    Write-Host "  git push myfork $my_branch" -ForegroundColor Yellow
-    exit 1
+    throw "Could not determine current branch."
 }
 
-Write-Host "Pushing to myfork/$my_branch..." -ForegroundColor Cyan
-git push myfork $my_branch
+if ($currentBranch -ne $myBranch) {
+    Invoke-Step "Switching to $myBranch..." {
+        Invoke-Git @('checkout', $myBranch)
+    }
+}
 
-Write-Host "Done. $my_branch is up to date with $remote/$upstream_branch." -ForegroundColor Green
-
-# Check if HEAD actually moved (i.e. new commits were merged)
-# $new_head = git rev-parse HEAD
-# if ($new_head -eq $before_head) {
-#     Write-Host "Already up to date — skipping build." -ForegroundColor Yellow
-#     exit 0
-# }
-
-Write-Host "New commits merged, building xenia..." -ForegroundColor Cyan
-uv run xenia-build.py build --config Release
+$beforeHead = git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Build failed!" -ForegroundColor Red
-    exit 1
+    throw "Could not determine HEAD before merge."
 }
 
-$exe = "build\bin\Windows\Release\xenia_canary.exe"
-$dest = "E:\xbox360\Emulators\Xenia Canary"
+Invoke-Step "Merging $upstreamRemote/$upstreamBranch into $myBranch..." {
+    git merge "$upstreamRemote/$upstreamBranch" --no-edit
 
-if (-not (Test-Path $exe)) {
-    Write-Host "Build artifact not found at $exe" -ForegroundColor Red
-    exit 1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Merge conflict!" -ForegroundColor Red
+        Write-Host "Resolve conflicts, then run:" -ForegroundColor Yellow
+        Write-Host "  git add <resolved-files>" -ForegroundColor Yellow
+        Write-Host "  git commit" -ForegroundColor Yellow
+        Write-Host "  git push $pushRemote $myBranch" -ForegroundColor Yellow
+        exit 1
+    }
 }
 
-Write-Host "Copying $exe to $dest..." -ForegroundColor Cyan
-Copy-Item $exe $dest -Force
-Write-Host "Done. Xenia deployed to $dest." -ForegroundColor Green
+Invoke-Step "Pushing $myBranch to $pushRemote..." {
+    Invoke-Git @('push', $pushRemote, $myBranch)
+}
+
+$newHead = git rev-parse HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not determine HEAD after merge."
+}
+
+if ($newHead -eq $beforeHead) {
+    Write-Host "No new upstream commits merged - skipping build." -ForegroundColor Yellow
+    exit 0
+}
+
+Invoke-Step "New commits merged, building Xenia netplay..." {
+    uv run xenia-build.py build --config $buildConfig
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build failed."
+    }
+}
+
+$artifact = Get-BuildArtifact
+
+if (-not (Test-Path -LiteralPath $deployDest)) {
+    Write-Host "Creating deploy folder: $deployDest" -ForegroundColor Cyan
+    New-Item -ItemType Directory -Path $deployDest -Force | Out-Null
+}
+
+Invoke-Step "Copying $artifact to $deployDest..." {
+    Copy-Item -LiteralPath $artifact -Destination $deployDest -Force
+}
+
+Write-Host "Done. Netplay build deployed to $deployDest." -ForegroundColor Green

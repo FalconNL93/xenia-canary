@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_ACHIEVEMENT_BACKEND_H_
-#define XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_ACHIEVEMENT_BACKEND_H_
+#ifndef XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_HTTP_ACHIEVEMENT_BACKEND_H_
+#define XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_HTTP_ACHIEVEMENT_BACKEND_H_
 
 #include <atomic>
 #include <condition_variable>
@@ -90,4 +90,4 @@ class HttpAchievementBackend : public AchievementBackendInterface {
 }  // namespace kernel
 }  // namespace xe
 
-#endif  // XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_ACHIEVEMENT_BACKEND_H_
+#endif  // XENIA_KERNEL_XAM_ACHIEVEMENT_BACKENDS_HTTP_HTTP_ACHIEVEMENT_BACKEND_H_

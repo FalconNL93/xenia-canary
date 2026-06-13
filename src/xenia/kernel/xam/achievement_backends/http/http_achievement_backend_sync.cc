@@ -85,6 +85,13 @@ void HttpAchievementBackend::EarnAchievement(const uint64_t xuid,
 #endif  // XE_PLATFORM_WIN32
 }
 
+bool HttpAchievementBackend::LoadAchievementsData(const uint64_t xuid) {
+  PostPresenceNow();
+  SyncAchievements(xuid);
+
+  return false;
+}
+
 void HttpAchievementBackend::SyncAchievements(const uint64_t xuid) const {
 #if XE_PLATFORM_WIN32
   const std::string& base_url = cvars::http_achievement_backend_url;

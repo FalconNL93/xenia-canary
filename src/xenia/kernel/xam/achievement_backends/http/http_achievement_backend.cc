@@ -23,10 +23,10 @@ namespace xam {
 
 HttpAchievementBackend::HttpAchievementBackend() {
 #if XE_PLATFORM_WIN32
-  if (!cvars::http_achievement_backend_url.empty()) {
-    presence_timer_thread_ =
-        std::thread([this]() { RunPresenceTimer(); });
-  }
+  // if (!cvars::http_achievement_backend_url.empty()) {
+  //   presence_timer_thread_ =
+  //       std::thread([this]() { RunPresenceTimer(); });
+  // }
 #endif  // XE_PLATFORM_WIN32
 }
 

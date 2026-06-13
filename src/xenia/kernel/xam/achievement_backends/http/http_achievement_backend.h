@@ -32,7 +32,7 @@ class HttpAchievementBackend : public AchievementBackendInterface {
  public:
   HttpAchievementBackend();
   ~HttpAchievementBackend();
-
+  bool LoadAchievementsData(const uint64_t xuid) override;
   void EarnAchievement(const uint64_t xuid, const uint32_t title_id,
                        const uint32_t achievement_id) override;
 
@@ -59,7 +59,6 @@ class HttpAchievementBackend : public AchievementBackendInterface {
       const uint32_t achievement_id) const override {
     return {};
   }
-  bool LoadAchievementsData(const uint64_t xuid) override { return false; }
 
  private:
   // Posts the current game title and rich presence to <base_url>/presence.

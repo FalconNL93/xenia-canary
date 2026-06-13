@@ -100,6 +100,16 @@ void AchievementManager::EarnAchievement(const uint64_t xuid,
 
 void AchievementManager::LoadTitleAchievements(const uint64_t xuid) const {
   default_achievements_backend_->LoadAchievementsData(xuid);
+
+  for (const auto& backend : achievement_backends_) {
+    auto* backend_ptr = backend.get();
+
+    if (backend_ptr == default_achievements_backend_.get()) {
+      continue;
+    }
+
+    backend_ptr->LoadAchievementsData(xuid);
+  }
 }
 
 const std::optional<Achievement> AchievementManager::GetAchievementInfo(

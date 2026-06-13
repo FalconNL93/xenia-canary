@@ -1595,6 +1595,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
                     notification_position);
               });
         }
+      }
 
       const std::vector<kernel::util::GameInfoDatabase::Property>
           properties_list = game_info_database_->GetProperties();

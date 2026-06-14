@@ -41,6 +41,11 @@ void HttpAchievementBackend::PostPresenceNow() const {
     return;
   }
 
+  const auto* xam_state = kernel_state()->xam_state();
+  if (!xam_state) {
+    return;
+  }
+
   auto* spa = kernel_state()->xam_state()->spa_info();
   if (!spa) {
     return;
@@ -48,6 +53,11 @@ void HttpAchievementBackend::PostPresenceNow() const {
 
   const auto* pm = kernel_state()->xam_state()->profile_manager();
   if (!pm || !pm->IsAnyProfileSignedIn()) {
+    return;
+  }
+
+  const auto* user_tracker = xam_state->user_tracker();
+  if (!user_tracker) {
     return;
   }
 
@@ -67,9 +77,7 @@ void HttpAchievementBackend::PostPresenceNow() const {
 
   const std::string title_name = JsonEscape(spa->title_name(lang));
 
-  // Build rich presence string (same logic as SyncAchievements).
   std::string rich_presence;
-  const auto* user_tracker = kernel_state()->xam_state()->user_tracker();
   uint32_t compressed_size = 0, decompressed_size = 0;
   const uint8_t* xlast_ptr = spa->ReadXLast(compressed_size, decompressed_size);
   if (xlast_ptr) {

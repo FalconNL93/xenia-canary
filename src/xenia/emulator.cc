@@ -1578,25 +1578,6 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
       XELOGI("\n-------------------- ACHIEVEMENTS --------------------\n{}",
              table.str());
 
-      if (auto* profile_manager =
-              kernel_state_->xam_state()->profile_manager()) {
-        if (auto* profile =
-                profile_manager->GetProfile(static_cast<uint8_t>(0))) {
-          const std::string description = fmt::format("{}G - {}", "10", "Test");
-          auto* imgui_drawer = imgui_drawer_;
-
-          const auto notification_position =
-              kernel_state_->notification_position_;
-
-          display_window_->app_context().CallInUIThread(
-              [imgui_drawer, description, notification_position]() {
-                new xe::ui::AchievementNotificationWindow(
-                    imgui_drawer, "Achievement unlocked", description, 0,
-                    notification_position);
-              });
-        }
-      }
-
       const std::vector<kernel::util::GameInfoDatabase::Property>
           properties_list = game_info_database_->GetProperties();
 

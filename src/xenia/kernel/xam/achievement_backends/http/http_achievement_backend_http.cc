@@ -9,10 +9,25 @@
 
 #include "xenia/kernel/xam/achievement_backends/http/http_achievement_backend_internal.h"
 
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
+
+#if XE_PLATFORM_WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
+#endif  // XE_PLATFORM_WIN32
+
 namespace xe {
 namespace kernel {
 namespace xam {
-namespace http_achievement_backend_internal {
+
+namespace http_backend_internal {
 
 // Escapes a UTF-8 string for use as a JSON string value (without surrounding
 // quotes). Handles the characters required by RFC 8259 §7.
@@ -223,7 +238,8 @@ void PostJsonBlocking(const std::string& url, const std::string& body) {
 }
 #endif  // XE_PLATFORM_WIN32
 
-}  // namespace http_achievement_backend_internal
+}  // namespace http_backend_internal
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

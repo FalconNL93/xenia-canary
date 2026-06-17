@@ -156,20 +156,38 @@ void AchievementNotificationWindow::OnDraw(ImGuiIO& io) {
 
   ImGui::Begin("Notification Window", NULL, NOTIFY_TOAST_FLAGS);
   {
+    auto* draw_list = ImGui::GetWindowDrawList();
+    const ImVec2 window_pos = ImGui::GetWindowPos();
+
+    draw_list->AddRectFilled(
+        window_pos,
+        ImVec2(window_pos.x + 6.0f * window_scale,
+               window_pos.y + current_notification_size.y),
+        IM_COL32(16, 180, 16, 255));
+
     ImGui::SetWindowFontScale(default_notification_text_scale * font_scale *
                               window_scale);
-    // Set offset to image to prevent it from being right on border.
-    ImGui::SetCursorPos(ImVec2(final_notification_size.x * 0.005f,
-                               final_notification_size.y * 0.05f));
-    // Elements of window
+
+    ImGui::SetCursorPos(ImVec2(14.0f * window_scale,
+                               final_notification_size.y * 0.12f));
+
     ImGui::Image(reinterpret_cast<ImTextureID>(
                      GetDrawer()->GetNotificationIcon(GetUserIndex())),
-                 ImVec2(default_notification_icon_size.x * window_scale,
-                        default_notification_icon_size.y * window_scale));
+                 ImVec2(48.0f * window_scale, 48.0f * window_scale));
 
     ImGui::SameLine();
+
     if (notification_draw_progress_ > 0.5f) {
-      ImGui::TextColored(white_color, "%s", GetNotificationText().data());
+      ImGui::BeginGroup();
+
+      ImGui::TextColored(white_color, "%s", GetTitle().data());
+
+      ImGui::SetWindowFontScale(default_notification_text_scale * font_scale *
+                                window_scale * 0.78f);
+
+      ImGui::TextColored(white_color, "%s", GetDescription().data());
+
+      ImGui::EndGroup();
     }
   }
   // Restore previous style

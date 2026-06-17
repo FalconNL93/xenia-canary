@@ -7,13 +7,19 @@
  ******************************************************************************
  */
 
-#include "xenia/kernel/xam/achievement_backends/http/http_achievement_backend_internal.h"
+#include "xenia/kernel/xam/achievement_backends/http/http_achievement_backend.h"
+
+#include <chrono>
+#include <mutex>
+#include <thread>
+
+#include "xenia/base/platform.h"
+
+DECLARE_string(http_achievement_backend_url);
 
 namespace xe {
 namespace kernel {
 namespace xam {
-
-using namespace http_achievement_backend_internal;
 
 HttpAchievementBackend::HttpAchievementBackend() {
 #if XE_PLATFORM_WIN32

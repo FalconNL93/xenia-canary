@@ -760,11 +760,25 @@ void EmulatorApp::EmulatorThread() {
   }
 
   emulator_->on_launch.AddListener([&](auto title_id, const auto& game_title) {
-    discord::DiscordPresence::PlayingTitle(
-        game_title.empty() ? "Unknown Title" : std::string(game_title),
-        "In Game");
+    if (cvars::discord) {
+      discord::DiscordPresence::PlayingTitle(
+          game_title.empty() ? "Unknown Title" : std::string(game_title),
+          "In Game");
+    }
+
+    if (auto* xam_state = emulator_->kernel_state()->xam_state()) {
+      if (auto* profile_manager = xam_state->profile_manager()) {
+        if (auto* profile =
+                profile_manager->GetProfile(static_cast<uint8_t>(0))) {
+          if (auto* achievement_manager = xam_state->achievement_manager()) {
+            achievement_manager->LoadTitleAchievements(profile->xuid());
+          }
+        }
+      }
+    }
 
     app_context().CallInUIThread([this]() { emulator_window_->UpdateTitle(); });
+
     emulator_thread_event_->Set();
   });
 

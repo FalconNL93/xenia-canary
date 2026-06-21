@@ -29,7 +29,7 @@ $BuildArguments = @(
     'Release'
 )
 
-$BuildArtifact = 'build\bin\Windows\Release\xenia_canary.exe'
+$BuildArtifact = 'build\bin\Windows\Release\xenia_canary_netplay.exe'
 $DeployDestination = 'E:\xbox360\Emulators\Xenia Canary Netplay'
 
 $SkipBuildWhenAlreadyUpToDate = $true

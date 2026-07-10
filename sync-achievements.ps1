@@ -216,7 +216,9 @@ function Get-BuildArtifact {
 # =============================================================================
 
 Write-Host "Fetching latest from $UpstreamRemote..." -ForegroundColor Cyan
-Invoke-Git @('fetch', $UpstreamRemote, '--prune', '--tags')
+# --force lets moved upstream tags (e.g. 'experimental') update instead of
+# aborting the fetch with "would clobber existing tag".
+Invoke-Git @('fetch', $UpstreamRemote, '--prune', '--tags', '--force')
 
 $currentBranch = git rev-parse --abbrev-ref HEAD
 

@@ -1,124 +1,311 @@
 # sync-achievements.ps1
-# Syncs AdrianCassar netplay upstream into your local netplay-achievements branch.
+# Fetches latest netplay_canary_experimental from AdrianCassar upstream, merges
+# into netplay-achievements, syncs/updates submodules, builds Xenia, pushes to
+# fork, then deploys the exe.
 # Run from the xenia-canary-netplay repo root.
+#
+# Usage:
+#   .\sync-achievements.ps1
+#   .\sync-achievements.ps1 -Force
+
+param(
+    [switch]$Force
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$upstreamRemote = 'upstream'
-$upstreamBranch = 'netplay_canary_experimental'
-$myBranch = 'netplay-achievements'
-$pushRemote = 'origin'
+# =============================================================================
+# Configuration
+# =============================================================================
 
-$buildConfig = 'Release'
+$UpstreamRemote = 'upstream'
+$ForkRemote = 'origin'
 
-$artifactCandidates = @(
-    "build\bin\Windows\$buildConfig\xenia_canary_netplay.exe",
-    "build\bin\Windows\$buildConfig\xenia_canary.exe"
+$UpstreamBranch = 'netplay_canary_experimental'
+$LocalBranch = 'netplay-achievements'
+
+$BuildCommand = 'uv'
+$BuildArguments = @(
+    'run',
+    'xenia-build.py',
+    'build',
+    '--config',
+    'Release'
 )
 
-$deployDest = "E:\xbox360\Emulators\Xenia Netplay"
+# The netplay build may produce either name depending on project config; prefer
+# the netplay-specific artifact, then fall back to the generic canary name.
+$BuildArtifactCandidates = @(
+    'build\bin\Windows\Release\xenia_canary_netplay.exe',
+    'build\bin\Windows\Release\xenia_canary.exe'
+)
+$DeployDestination = 'E:\xbox360\Emulators\Xenia Netplay'
+
+$SkipBuildWhenAlreadyUpToDate = $true
+
+# Local changes that are allowed to exist while running this script.
+$AllowedDirtyPaths = @(
+    'sync-achievements.ps1',
+    'third_party/fmt'
+)
+
+# Old submodules from other branches that may still exist as stale gitlinks in
+# the index but no longer exist in .gitmodules. In the netplay variant,
+# libcurl/miniupnp/wolfssl are REAL submodules, so this list is empty here.
+$StaleSubmodulePathsToAutoRemove = @()
+
+# =============================================================================
+# Helpers
+# =============================================================================
 
 function Invoke-Git {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
+        [string[]]$Arguments
     )
 
     git @Arguments
 
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') failed."
+        throw "Git command failed: git $($Arguments -join ' ')"
     }
 }
 
-function Invoke-Step {
+function Get-GitOutput {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Message,
-
-        [Parameter(Mandatory = $true)]
-        [scriptblock] $Action
+        [string[]]$Arguments
     )
 
-    Write-Host $Message -ForegroundColor Cyan
-    & $Action
+    $output = git @Arguments 2>$null
+
+    if ($LASTEXITCODE -ne 0) {
+        return @()
+    }
+
+    return @($output)
+}
+
+function Get-GitModulesPaths {
+    $paths = @()
+    $lines = Get-GitOutput @('--no-pager', 'config', '--file', '.gitmodules', '--get-regexp', 'path')
+
+    foreach ($line in $lines) {
+        $parts = $line -split '\s+', 2
+
+        if ($parts.Count -eq 2) {
+            $paths += $parts[1].Trim()
+        }
+    }
+
+    return $paths
+}
+
+function Remove-StaleSubmoduleReferences {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$AllowedStalePaths
+    )
+
+    $gitModulesPaths = Get-GitModulesPaths
+    $removedAny = $false
+
+    foreach ($path in $AllowedStalePaths) {
+        $indexLines = Get-GitOutput @('--no-pager', 'ls-files', '--stage', $path)
+
+        if (-not $indexLines) {
+            continue
+        }
+
+        $isGitLink = $false
+
+        foreach ($indexLine in $indexLines) {
+            if ($indexLine -match '^160000\s+') {
+                $isGitLink = $true
+                break
+            }
+        }
+
+        $existsInGitModules = $gitModulesPaths -contains $path
+
+        if ($isGitLink -and -not $existsInGitModules) {
+            Write-Host "Removing stale submodule reference: $path" -ForegroundColor Yellow
+
+            Invoke-Git @('rm', '--cached', $path)
+
+            if (Test-Path $path) {
+                Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+            }
+
+            $moduleCachePath = Join-Path (Get-Location) ".git\modules\$path"
+
+            if (Test-Path $moduleCachePath) {
+                Remove-Item -Recurse -Force $moduleCachePath -ErrorAction SilentlyContinue
+            }
+
+            $removedAny = $true
+        }
+    }
+
+    return $removedAny
+}
+
+function Sync-And-Update-Submodules {
+    Write-Host "Synchronizing submodule metadata..." -ForegroundColor Cyan
+    Invoke-Git @('submodule', 'sync', '--recursive')
+
+    Write-Host "Checking for stale submodule references..." -ForegroundColor Cyan
+    $removedStaleSubmodules = Remove-StaleSubmoduleReferences -AllowedStalePaths $StaleSubmodulePathsToAutoRemove
+
+    if ($removedStaleSubmodules) {
+        Write-Host "Stale submodule references were removed from the index." -ForegroundColor Yellow
+        Write-Host "These removals will be committed with the normal sync commit/push flow." -ForegroundColor Yellow
+
+        Write-Host "Synchronizing submodule metadata again after cleanup..." -ForegroundColor Cyan
+        Invoke-Git @('submodule', 'sync', '--recursive')
+    }
+
+    Write-Host "Updating submodules..." -ForegroundColor Cyan
+    Invoke-Git @('submodule', 'update', '--init', '--recursive')
+}
+
+function Get-StatusPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StatusLine
+    )
+
+    $path = $StatusLine.Substring(3).Trim()
+
+    if ($path.Contains(' -> ')) {
+        $path = ($path -split ' -> ', 2)[1].Trim()
+    }
+
+    return $path
+}
+
+function Test-IsAllowedDirtyPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    foreach ($allowedPath in $AllowedDirtyPaths) {
+        if ($Path -eq $allowedPath -or $Path.StartsWith("$allowedPath/")) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Get-BuildArtifact {
-    foreach ($candidate in $artifactCandidates) {
+    foreach ($candidate in $BuildArtifactCandidates) {
         if (Test-Path -LiteralPath $candidate) {
             return $candidate
         }
     }
 
-    throw "Build artifact not found. Tried: $($artifactCandidates -join ', ')"
+    return $null
 }
 
-Invoke-Step "Fetching latest from $upstreamRemote..." {
-    Invoke-Git @('fetch', $upstreamRemote)
-}
+# =============================================================================
+# Script
+# =============================================================================
+
+Write-Host "Fetching latest from $UpstreamRemote..." -ForegroundColor Cyan
+Invoke-Git @('fetch', $UpstreamRemote, '--prune', '--tags')
 
 $currentBranch = git rev-parse --abbrev-ref HEAD
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not determine current branch."
-}
 
-if ($currentBranch -ne $myBranch) {
-    Invoke-Step "Switching to $myBranch..." {
-        Invoke-Git @('checkout', $myBranch)
-    }
+if ($currentBranch -ne $LocalBranch) {
+    Write-Host "Switching to $LocalBranch..." -ForegroundColor Cyan
+    Invoke-Git @('checkout', $LocalBranch)
 }
 
 $beforeHead = git rev-parse HEAD
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not determine HEAD before merge."
+
+Write-Host "Merging $UpstreamRemote/$UpstreamBranch into $LocalBranch..." -ForegroundColor Cyan
+
+try {
+    Invoke-Git @('merge', "$UpstreamRemote/$UpstreamBranch", '--no-edit')
 }
-
-Invoke-Step "Merging $upstreamRemote/$upstreamBranch into $myBranch..." {
-    git merge "$upstreamRemote/$upstreamBranch" --no-edit
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Merge conflict!" -ForegroundColor Red
-        Write-Host "Resolve conflicts, then run:" -ForegroundColor Yellow
-        Write-Host "  git add <resolved-files>" -ForegroundColor Yellow
-        Write-Host "  git commit" -ForegroundColor Yellow
-        Write-Host "  git push $pushRemote $myBranch" -ForegroundColor Yellow
-        exit 1
-    }
-}
-
-Invoke-Step "Pushing $myBranch to $pushRemote..." {
-    Invoke-Git @('push', $pushRemote, $myBranch)
+catch {
+    Write-Host "Merge conflict! Resolve conflicts, then run:" -ForegroundColor Red
+    Write-Host "  git merge --continue" -ForegroundColor Yellow
+    Write-Host "  .\sync-achievements.ps1 -Force" -ForegroundColor Yellow
+    exit 1
 }
 
 $newHead = git rev-parse HEAD
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not determine HEAD after merge."
+
+try {
+    Sync-And-Update-Submodules
+}
+catch {
+    Write-Host "Submodule sync/update failed!" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Yellow
+    exit 1
 }
 
-if ($newHead -eq $beforeHead) {
-    Write-Host "No new upstream commits merged - skipping build." -ForegroundColor Yellow
-    exit 0
-}
+$statusLines = @(git status --short)
+$unexpectedStatusLines = @()
 
-Invoke-Step "New commits merged, building Xenia netplay..." {
-    uv run xenia-build.py build --config $buildConfig
+foreach ($line in $statusLines) {
+    $path = Get-StatusPath -StatusLine $line
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Build failed."
+    if (-not (Test-IsAllowedDirtyPath -Path $path)) {
+        $unexpectedStatusLines += $line
     }
 }
 
-$artifact = Get-BuildArtifact
-
-if (-not (Test-Path -LiteralPath $deployDest)) {
-    Write-Host "Creating deploy folder: $deployDest" -ForegroundColor Cyan
-    New-Item -ItemType Directory -Path $deployDest -Force | Out-Null
+if ($unexpectedStatusLines.Count -gt 0) {
+    Write-Host "Working tree has unexpected changes:" -ForegroundColor Red
+    Write-Host ($unexpectedStatusLines -join "`n") -ForegroundColor Yellow
+    exit 1
 }
 
-Invoke-Step "Copying $artifact to $deployDest..." {
-    Copy-Item -LiteralPath $artifact -Destination $deployDest -Force
+if ($statusLines) {
+    Write-Host "Ignoring allowed local/submodule changes:" -ForegroundColor Yellow
+    Write-Host ($statusLines -join "`n") -ForegroundColor DarkYellow
 }
 
-Write-Host "Done. Netplay build deployed to $deployDest." -ForegroundColor Green
+if ($SkipBuildWhenAlreadyUpToDate -and -not $Force -and $newHead -eq $beforeHead) {
+    Write-Host "Already up to date - skipping build, push, and deploy." -ForegroundColor Yellow
+    Write-Host "Use -Force to build anyway." -ForegroundColor Yellow
+    exit 0
+}
+
+if ($Force) {
+    Write-Host "Force enabled - building even if already up to date." -ForegroundColor Yellow
+}
+
+Write-Host "Building Xenia netplay..." -ForegroundColor Cyan
+& $BuildCommand @BuildArguments
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Build failed!" -ForegroundColor Red
+    exit 1
+}
+
+$BuildArtifact = Get-BuildArtifact
+
+if (-not $BuildArtifact) {
+    Write-Host "Build artifact not found. Tried: $($BuildArtifactCandidates -join ', ')" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Pushing $LocalBranch to $ForkRemote..." -ForegroundColor Cyan
+Invoke-Git @('push', $ForkRemote, $LocalBranch)
+
+if (-not (Test-Path $DeployDestination)) {
+    Write-Host "Creating deploy folder: $DeployDestination" -ForegroundColor Cyan
+    New-Item -ItemType Directory -Path $DeployDestination -Force | Out-Null
+}
+
+Write-Host "Copying $BuildArtifact to $DeployDestination..." -ForegroundColor Cyan
+Copy-Item $BuildArtifact $DeployDestination -Force
+
+Write-Host "Done. Netplay build deployed to $DeployDestination." -ForegroundColor Green

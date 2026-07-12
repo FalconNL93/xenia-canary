@@ -357,7 +357,7 @@ void HttpAchievementBackend::PostPresenceNow() const {
               }
 
               const auto raw_presence =
-                  xlast.GetPresenceRawString(presence_property);
+                  xlast.GetPresenceRawString(*presence_property);
               if (raw_presence.empty()) {
                 continue;
               }
@@ -600,7 +600,7 @@ void HttpAchievementBackend::SyncAchievements(const uint64_t xuid) const {
               }
 
               const auto raw_presence =
-                  xlast.GetPresenceRawString(presence_property);
+                  xlast.GetPresenceRawString(*presence_property);
               if (raw_presence.empty()) {
                 continue;
               }

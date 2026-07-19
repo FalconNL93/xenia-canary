@@ -294,6 +294,16 @@ uint32_t XamUserReadProfileSettingsEx(
       return X_ERROR_FUNCTION_FAILED;
     }
 
+    if (xuids) {
+      for (const auto xuid : profile_xuids) {
+        if (IsOnlineXUID(xuid) &&
+            cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+          extended_error = X_ONLINE_E_USER_NOT_LOGGED_ON;
+          return X_ERROR_FUNCTION_FAILED;
+        }
+      }
+    }
+
     // 455607DB uses invalid setting IDs
     auto valid_requested_settings_view =
         settings_ids | std::views::filter([](uint32_t setting_id) {
@@ -394,11 +404,6 @@ uint32_t XamUserReadProfileSettingsEx(
         total_profile_xuids.push_back(user_profile->xuid());
         local_user_settings[user_profile->xuid()] = settings;
       }
-    }
-
-    if (local_user_settings.empty() && remote_user_settings.empty()) {
-      extended_error = X_E_NO_SUCH_USER;
-      return X_ERROR_FUNCTION_FAILED;
     }
 
     // The order of xuids isn't preserved.
@@ -773,21 +778,33 @@ dword_result_t XamUserAreUsersFriends_entry(
 DECLARE_XAM_EXPORT1(XamUserAreUsersFriends, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetAgeGroup_entry(
-    dword_t user_index, lpdword_t age_ptr,
+    dword_t user_index, lpdword_t age_group_ptr,
     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
-  if (!age_ptr) {
-    return X_ERROR_INVALID_PARAMETER;
+  uint32_t result = X_ERROR_SUCCESS;
+
+  if (!age_group_ptr) {
+    result = X_ERROR_INVALID_PARAMETER;
   }
 
   if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
-    return X_ERROR_NO_SUCH_USER;
+    result = X_ERROR_NO_SUCH_USER;
   }
 
-  auto run = [user_index, age_ptr, overlapped_ptr](
-                 uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+  if (result) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  auto run = [user_index, age_group_ptr](uint32_t& extended_error,
+                                         uint32_t& length) -> X_RESULT {
     X_RESULT result = X_ERROR_SUCCESS;
 
-    *age_ptr = X_USER_AGE_GROUP::ADULT;
+    if (cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+      result = X_ERROR_NO_SUCH_USER;
+    }
+
+    if (!result) {
+      *age_group_ptr = X_USER_AGE_GROUP::ADULT;
+    }
 
     extended_error = X_HRESULT_FROM_WIN32(result);
     length = 0;
@@ -797,7 +814,10 @@ dword_result_t XamUserGetAgeGroup_entry(
 
   if (!overlapped_ptr) {
     uint32_t extended_error, length;
-    return run(extended_error, length);
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                     : X_ERROR_FUNCTION_FAILED;
   }
 
   kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
@@ -808,23 +828,35 @@ DECLARE_XAM_EXPORT1(XamUserGetAgeGroup, kUserProfiles, kImplemented);
 // 454109D0
 dword_result_t XamUserGetAge_entry(dword_t user_index, lpdword_t age_ptr,
                                    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  uint32_t result = X_ERROR_SUCCESS;
+
   if (!age_ptr) {
-    return X_ERROR_INVALID_PARAMETER;
+    result = X_ERROR_INVALID_PARAMETER;
   }
 
   if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
-    return X_ERROR_NO_SUCH_USER;
+    result = X_ERROR_NO_SUCH_USER;
   }
 
   if (!xboxkrnl::XexCheckExecutablePrivilege(XEX_PRIVILEGE_PII_ACCESS)) {
-    return X_ONLINE_E_ACCESS_DENIED;
+    result = X_ONLINE_E_ACCESS_DENIED;
   }
 
-  auto run = [user_index, age_ptr, overlapped_ptr](
-                 uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+  if (result) {
+    result = X_ERROR_FUNCTION_FAILED;
+  }
+
+  auto run = [user_index, age_ptr](uint32_t& extended_error,
+                                   uint32_t& length) -> X_RESULT {
     X_RESULT result = X_ERROR_SUCCESS;
 
-    *age_ptr = 0;
+    if (cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+      result = X_ERROR_NO_SUCH_USER;
+    }
+
+    if (!result) {
+      *age_ptr = 0;
+    }
 
     extended_error = X_HRESULT_FROM_WIN32(result);
     length = 0;
@@ -834,7 +866,10 @@ dword_result_t XamUserGetAge_entry(dword_t user_index, lpdword_t age_ptr,
 
   if (!overlapped_ptr) {
     uint32_t extended_error, length;
-    return run(extended_error, length);
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                     : X_ERROR_FUNCTION_FAILED;
   }
 
   kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);

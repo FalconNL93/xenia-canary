@@ -57,6 +57,14 @@ DEFINE_bool(
 
 DEFINE_bool(xhttp, false, "Toggles XHTTP.", "Live");
 
+DEFINE_bool(net_direct_ip, false,
+            "Direct IPv4 compatibility mode. Always report a fully configured, "
+            "online-capable network adapter to the title regardless of Xbox "
+            "Live logon state, and never resolve an XNADDR to 0.0.0.0. Lets "
+            "titles that kept a legacy IPv4 network path (id Tech 3 "
+            "derivatives, etc.) reach arbitrary PC servers.",
+            "Live");
+
 DEFINE_int32(discord_presence_user_index, 0,
              "User profile index used for Discord rich presence [0, 3].",
              "Live");
@@ -130,6 +138,24 @@ void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
 
   if (kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
     XnAddr_ptr->wPortOnline = xbl_api->GetPlayerPort();
+  }
+
+  // Direct IPv4 mode: the title must always see a usable local address.
+  // Engines that cache their local address at NET_Init time (id Tech 3
+  // "net_ip", for example) treat 0.0.0.0 as "networking not configured" and
+  // then never open a socket, so no packet is ever sent.
+  if (cvars::net_direct_ip) {
+    if (!XnAddr_ptr->ina.s_addr) {
+      XnAddr_ptr->ina = adapter_local_ip.sin_addr;
+    }
+
+    if (!XnAddr_ptr->inaOnline.s_addr) {
+      XnAddr_ptr->inaOnline = XnAddr_ptr->ina;
+    }
+
+    if (!XnAddr_ptr->wPortOnline) {
+      XnAddr_ptr->wPortOnline = xbl_api->GetPlayerPort();
+    }
   }
 
   XnAddr_ptr->abOnline.platform_type = PLATFORM_TYPE::Xbox360;

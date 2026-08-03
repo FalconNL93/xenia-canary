@@ -53,6 +53,8 @@ DECLARE_int32(network_mode);
 
 DECLARE_bool(bind_interface);
 
+DECLARE_bool(net_direct_ip);
+
 enum XNET_QOS {
   LISTEN_ENABLE = 0x01,
   LISTEN_DISABLE = 0x02,
@@ -181,6 +183,29 @@ struct X_TIMEVAL {
   xe::be<long> tv_usec;
 };
 static_assert_size(X_TIMEVAL, 0x8);
+
+// Dump id-Tech-style connectionless packets (0xFFFFFFFF header) as text so the
+// getchallenge/challengeResponse/connect handshake can be read from the log.
+static void LogOOBPacket(const char* direction, const uint8_t* data,
+                         uint32_t length) {
+  if (!cvars::logging || !data || length < 4) {
+    return;
+  }
+
+  if (data[0] != 0xFF || data[1] != 0xFF || data[2] != 0xFF ||
+      data[3] != 0xFF) {
+    return;
+  }
+
+  std::string text;
+  const uint32_t limit = std::min(length, 4u + 512u);
+  for (uint32_t i = 4; i < limit; i++) {
+    const uint8_t c = data[i];
+    text += (c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '.';
+  }
+
+  XELOGI("{} OOB packet ({} bytes): \"{}\"", direction, length, text);
+}
 
 // Initialize sockaddr to its default state
 static void InitializeSockaddr(XSOCKADDR_IN* sockaddr_ptr) {
@@ -599,6 +624,8 @@ dword_result_t NetDll_WSASendTo_entry(
            socket->GetProtocolUPnPString());
   }
 
+  LogOOBPacket("Send", combined_buffer_mem.data(), combined_buffer_size);
+
   if (num_bytes_sent && !overlapped) {
     *num_bytes_sent = result;
   }
@@ -709,6 +736,15 @@ dword_result_t NetDll_XNetGetTitleXnAddr_entry(dword_t caller,
 
   if (cvars::network_mode == NETWORK_MODE::XBOXLIVE) {
     status |= XNADDR_STATUS::XNADDR_ONLINE;
+  }
+
+  // Direct IPv4 mode: unconditionally report a fully configured adapter.
+  // Titles poll this in a loop during network init and refuse to open any
+  // socket while it reports PENDING/TROUBLESHOOT.
+  if (cvars::net_direct_ip) {
+    status = XNADDR_STATUS::XNADDR_ETHERNET | XNADDR_STATUS::XNADDR_STATIC |
+             XNADDR_STATUS::XNADDR_GATEWAY | XNADDR_STATUS::XNADDR_DNS |
+             XNADDR_STATUS::XNADDR_ONLINE;
   }
 
   XLiveAPI::IpGetConsoleXnAddr(XnAddr_ptr);
@@ -904,6 +940,21 @@ dword_result_t NetDll_XNetXnAddrToInAddr_entry(dword_t caller,
     in_addr->s_addr = xn_addr->inaOnline.s_addr;
   }
 
+  // Never hand the title a 0.0.0.0 "handle". sendto() to 0.0.0.0 succeeds on
+  // Windows but the datagram never leaves the host, which is indistinguishable
+  // from a dropped packet. Fall back to whatever the XNADDR actually carries.
+  if (!in_addr->s_addr) {
+    if (xn_addr->ina.s_addr) {
+      in_addr->s_addr = xn_addr->ina.s_addr;
+    } else if (xn_addr->inaOnline.s_addr) {
+      in_addr->s_addr = xn_addr->inaOnline.s_addr;
+    } else {
+      XELOGW(
+          "XNetXnAddrToInAddr: XNADDR carries no usable IPv4 address, title "
+          "will send to 0.0.0.0!");
+    }
+  }
+
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToInAddr, kNetworking, kSketchy);
@@ -1056,7 +1107,7 @@ dword_result_t NetDll_XNetGetBroadcastVersionStatus_entry(dword_t caller,
 DECLARE_XAM_EXPORT1(NetDll_XNetGetBroadcastVersionStatus, kNetworking, kStub);
 
 dword_result_t NetDll_XNetGetEthernetLinkStatus_entry(dword_t caller) {
-  if (cvars::network_mode == NETWORK_MODE::OFFLINE) {
+  if (cvars::network_mode == NETWORK_MODE::OFFLINE && !cvars::net_direct_ip) {
     return ETHERNET_STATUS::ETHERNET_LINK_NONE;
   }
 
@@ -1568,7 +1619,10 @@ dword_result_t XampXAuthStartup_entry(pointer_t<XAUTH_SETTINGS> setttings) {
     return 0x80158401;
   }
 
-  if (!kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+  // Direct IPv4 mode: titles that gate their network init on XAuth would
+  // otherwise never reach socket creation while signed out of Live.
+  if (!cvars::net_direct_ip &&
+      !kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
     return 0x80158406;
   }
 
@@ -1995,6 +2049,9 @@ dword_result_t NetDll_socket_entry(dword_t caller, dword_t af, dword_t type,
   // if (type == SOCK_STREAM)
   //   socket->SetOption(SOL_SOCKET, 0x5802, &optEnable, sizeof(BOOL));
 
+  XELOGI("NetDll_socket: af={} type={} protocol={} -> handle {:08X}",
+         af.value(), type.value(), protocol.value(), socket->handle());
+
   return socket->handle();
 }
 DECLARE_XAM_EXPORT1(NetDll_socket, kNetworking, kImplemented);
@@ -2171,6 +2228,11 @@ dword_result_t NetDll_connect_entry(dword_t caller, dword_t socket_handle,
   if (!socket) {
     XThread::SetLastError(uint32_t(X_WSAError::X_WSAENOTSOCK));
     return -1;
+  }
+
+  if (!cvars::log_mask_ips && name) {
+    XELOGI("NetDll_connect: {}:{}", ip_to_string(name->address_ip),
+           name->address_port.get());
   }
 
   X_STATUS status = socket->Connect(name, namelen);
@@ -2438,6 +2500,10 @@ dword_result_t NetDll_recvfrom_entry(dword_t caller, dword_t socket_handle,
     XELOGI("NetDll_recvfrom: Received {} bytes from: {}:{}({})", ret,
            ip_to_string(from_ptr->address_ip), from_ptr->address_port.get(),
            socket->GetProtocolUPnPString());
+  }
+
+  if (ret > 0) {
+    LogOOBPacket("Recv", buf_ptr.as<uint8_t*>(), static_cast<uint32_t>(ret));
   }
 
   return ret;

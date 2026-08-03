@@ -672,11 +672,21 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags,
                     XSOCKADDR_IN* to, uint32_t to_len) {
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
+  // This is a remote peer's port, so it must go through the connect mapping.
+  // Using the bind mapping here rewrote outbound destination ports with local
+  // bind translations, which silently misdirects traffic to servers that are
+  // not part of a mapped session.
   if (upnp) {
-    to->address_port = upnp->GetMappedBindPort(to->address_port);
+    to->address_port = upnp->GetMappedConnectPort(to->address_port);
   }
 
   sockaddr addr = to->to_host();
+
+  if (to && !to->address_ip.s_addr) {
+    XELOGW(
+        "XSocket::SendTo: destination is 0.0.0.0, datagram will not leave the "
+        "host!");
+  }
 
   // Ensure the bound interface can route to the loopback interface/itself
   if (cvars::bind_interface) {

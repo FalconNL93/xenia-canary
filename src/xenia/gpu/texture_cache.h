@@ -229,6 +229,17 @@ class TextureCache {
       return depth_or_array_size_minus_1 + 1;
     }
 
+    // Returns true if this is a wide 1D texture (> 8192 wide) mapped to 2D.
+    bool IsWide1D() const {
+      return dimension == xenos::DataDimension::k1D && height_minus_1 > 0;
+    }
+    uint32_t Get1DWidth() const {
+      if (IsWide1D()) {
+        return GetWidth() * GetHeight();
+      }
+      return GetWidth();
+    }
+
     texture_util::TextureGuestLayout GetGuestLayout() const {
       return texture_util::GetGuestTextureLayout(
           dimension, pitch, GetWidth(), GetHeight(), GetDepthOrArraySize(),
@@ -511,7 +522,7 @@ class TextureCache {
 
   struct TextureBinding {
     TextureKey key;
-    // Packed integer scale, 5 bits per component.
+    // Packed integer scale, 6 bits per component.
     uint32_t integer_scale_bits;
     // Destination swizzle merged with guest to host format swizzle.
     uint32_t host_swizzle;
@@ -594,7 +605,7 @@ class TextureCache {
   // shader to restore guest integer units from normalized host samples.
   static uint32_t GetIntegerScaleBits(xenos::TextureFormat guest_format,
                                       uint32_t num_format,
-                                      uint32_t host_swizzle,
+                                      uint32_t guest_swizzle,
                                       uint8_t swizzled_signs);
   bool LoadTextureData(Texture& texture);
   void LoadTexturesData(Texture** textures, uint32_t n_textures);

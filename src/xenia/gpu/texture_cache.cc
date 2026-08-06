@@ -364,9 +364,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     uint32_t old_host_swizzle = binding.host_swizzle;
     binding.host_swizzle =
         GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(binding.key));
-    binding.integer_scale_bits =
-        GetIntegerScaleBits(fetch.format, fetch.num_format,
-                            binding.host_swizzle, binding.swizzled_signs);
+    binding.integer_scale_bits = GetIntegerScaleBits(
+        fetch.format, fetch.num_format, fetch.swizzle, binding.swizzled_signs);
 
     // Check if need to load the unsigned and the signed versions of the texture
     // (if the format is emulated with different host bit representations for
@@ -690,11 +689,11 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
 // undo the host sampler's normalization - the guest wants e.g. [0, 255], not
 // [0, 1]. 6 bits per output component: bits 0:3 = width - 1, bit 4 = signed,
 // bit 5 = unsigned-biased. The scale lands after swizzling, so each output lane
-// walks the host swizzle back to its source component's width; constant (0/1)
+// walks the guest swizzle back to its source component's width; constant (0/1)
 // lanes, gamma, and non-fixed formats have nothing to rescale and stay 0.
 uint32_t TextureCache::GetIntegerScaleBits(xenos::TextureFormat guest_format,
                                            uint32_t num_format,
-                                           uint32_t host_swizzle,
+                                           uint32_t guest_swizzle,
                                            uint8_t swizzled_signs) {
   // num_format 0 is the normalized/fractional fetch - nothing to rescale.
   const FormatInfo& format_info = *FormatInfo::Get(guest_format);
@@ -705,7 +704,7 @@ uint32_t TextureCache::GetIntegerScaleBits(xenos::TextureFormat guest_format,
   }
 
   for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t source_component = (host_swizzle >> (i * 3)) & 0b111;
+    uint32_t source_component = (guest_swizzle >> (i * 3)) & 0b111;
     if (source_component >= xenos::XE_GPU_TEXTURE_SWIZZLE_0) {
       continue;
     }
@@ -992,15 +991,27 @@ void TextureCache::BindingInfoFromFetchConstant(
     // No texture data at all.
     return;
   }
+  uint32_t pitch = fetch.pitch;
   if (fetch.dimension == xenos::DataDimension::k1D) {
     bool is_invalid_1d = false;
-    // TODO(Triang3l): Support long 1D textures.
+    // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
+    // The shaders will convert 1D coordinates to 2D using the original width
+    // from the fetch constant.
     if (width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight) {
-      XELOGE(
-          "1D texture is too wide ({}) - ignoring! Report the game to Xenia "
-          "developers",
-          width_minus_1 + 1);
-      is_invalid_1d = true;
+      uint32_t total_width = width_minus_1 + 1;
+      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
+      uint32_t num_rows = (total_width + row_width - 1) / row_width;
+      width_minus_1 = row_width - 1;
+      height_minus_1 = num_rows - 1;
+      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
+      // assumes base level dimensions (num_rows), but at mip level N, the 2D
+      // texture becomes (8192 >> N) x (num_rows >> N), which breaks the mapping
+      // when num_rows >> N becomes 1 while the shader still expects multiple
+      // rows. Mipmaps are rarely used with 1D lookup textures anyway.
+      mip_max_level = 0;
+      // The guest pitch is meaningless for a texture the guest believes is 1D
+      // (the 9 bit field couldn't even express the line width).
+      pitch = xenos::kTexture2DCubeMaxWidthHeight >> 5;
     }
     assert_false(fetch.tiled);
     if (fetch.tiled) {
@@ -1031,7 +1042,7 @@ void TextureCache::BindingInfoFromFetchConstant(
   key_out.width_minus_1 = width_minus_1;
   key_out.height_minus_1 = height_minus_1;
   key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
-  key_out.pitch = fetch.pitch;
+  key_out.pitch = pitch;
   key_out.mip_max_level = mip_max_level;
   key_out.tiled = fetch.tiled;
   key_out.packed_mips = fetch.packed_mips;

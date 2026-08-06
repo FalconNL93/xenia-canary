@@ -92,14 +92,18 @@ uint64_t SpirvShaderTranslator::GetDefaultPixelShaderModification(
   return shader_modification.value;
 }
 
-std::vector<uint8_t> SpirvShaderTranslator::CreateDepthOnlyFragmentShader() {
+std::vector<uint8_t> SpirvShaderTranslator::CreateDepthOnlyFragmentShader(
+    Modification::DepthStencilMode depth_stencil_mode) {
   is_depth_only_fragment_shader_ = true;
   // TODO(Triang3l): Handle in a nicer way (is_depth_only_fragment_shader_ is a
   // leftover from when a Shader object wasn't used during translation).
   Shader shader(xenos::ShaderType::kPixel, 0, nullptr, 0);
   StringBuffer instruction_disassembly_buffer;
   shader.AnalyzeUcode(instruction_disassembly_buffer);
-  Shader::Translation& translation = *shader.GetOrCreateTranslation(0);
+  Modification modification(0);
+  modification.pixel.depth_stencil_mode = depth_stencil_mode;
+  Shader::Translation& translation =
+      *shader.GetOrCreateTranslation(modification.value);
   TranslateAnalyzedShader(translation);
   is_depth_only_fragment_shader_ = false;
   return translation.translated_binary();
@@ -147,6 +151,8 @@ void SpirvShaderTranslator::Reset() {
             spv::NoResult);
   output_or_var_fragment_depth_ = spv::NoResult;
   output_fragment_depth_ = spv::NoResult;
+  main_fbo_depth_unbiased_ = spv::NoResult;
+  main_fbo_depth_derivatives_.fill(spv::NoResult);
 
   main_switch_op_.reset();
   main_switch_next_pc_phi_operands_.clear();
@@ -734,9 +740,20 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
       builder_->addExecutionMode(function_main_,
                                  spv::ExecutionModeEarlyFragmentTests);
     }
-    if (current_shader().writes_depth() && !edram_fragment_shader_interlock_) {
+    // FSI handles depth manually.
+    if (!edram_fragment_shader_interlock_ &&
+        (current_shader().writes_depth() || DSV_IsWritingFloat24Depth() ||
+         DSV_IsApplyingPolygonOffset())) {
       builder_->addExecutionMode(function_main_,
                                  spv::ExecutionModeDepthReplacing);
+      // Truncating float24 conversion of the rasterizer's own depth rounds
+      // towards zero, so the output is always <= the original - announce that
+      // to keep coarse early-Z culling possible.
+      if (!current_shader().writes_depth() && !DSV_IsApplyingPolygonOffset() &&
+          GetSpirvShaderModification().pixel.depth_stencil_mode ==
+              Modification::DepthStencilMode::kFloat24Truncating) {
+        builder_->addExecutionMode(function_main_, spv::ExecutionModeDepthLess);
+      }
     }
     if (edram_fragment_shader_interlock_) {
       // Accessing per-sample values, so interlocking just when there's common
@@ -1345,6 +1362,11 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderBeforeMain() {
     cull_distance_count = user_clip_plane_count;
   } else {
     clip_distance_count = user_clip_plane_count;
+  }
+  // Vertex kill with "and" operator writes a dedicated cull distance after
+  // the user clip plane cull distances.
+  if (shader_modification.vertex.vertex_kill_and) {
+    ++cull_distance_count;
   }
   output_per_vertex_clip_distance_member_index_ = 0;
   output_per_vertex_cull_distance_member_index_ = 0;
@@ -1981,6 +2003,58 @@ void SpirvShaderTranslator::CompleteVertexOrTessEvalShaderInMain() {
   position_xyz = builder_->createNoContractionBinOp(
       spv::OpFAdd, type_float3_, position_xyz, ndc_offset_mul_w);
 
+  // Apply vertex killing requested via the kill flag (oPts.z) - bits 0:30 of
+  // the value being non-zero kills. Done after the NDC transform since the kill
+  // cull distance is just a flag and the position is about to be written.
+  if (current_shader().writes_point_size_edge_flag_kill_vertex() & 0b100) {
+    assert_true(var_main_point_size_edge_flag_kill_vertex_ != spv::NoResult);
+    id_vector_temp_.clear();
+    // Z vector component.
+    id_vector_temp_.push_back(builder_->makeIntConstant(2));
+    spv::Id kill_value = builder_->createLoad(
+        builder_->createAccessChain(spv::StorageClassFunction,
+                                    var_main_point_size_edge_flag_kill_vertex_,
+                                    id_vector_temp_),
+        spv::NoPrecision);
+    // Test the integer bits 0:30 rather than comparing the float to avoid
+    // denormal flushing affecting the result (matching the Direct3D 12 path).
+    spv::Id vertex_killed = builder_->createBinOp(
+        spv::OpINotEqual, type_bool_,
+        builder_->createBinOp(
+            spv::OpBitwiseAnd, type_uint_,
+            builder_->createUnaryOp(spv::OpBitcast, type_uint_, kill_value),
+            builder_->makeUintConstant(UINT32_C(0x7FFFFFFF))),
+        const_uint_0_);
+    if (shader_modification.vertex.vertex_kill_and) {
+      // "and" operator - write -1 to the dedicated cull distance when killed
+      // (the primitive is culled only if it's negative for all the vertices).
+      uint32_t vertex_kill_cull_distance_index =
+          shader_modification.vertex.user_clip_plane_cull
+              ? user_clip_plane_count
+              : 0;
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(builder_->makeIntConstant(
+          int(output_per_vertex_cull_distance_member_index_)));
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(int(vertex_kill_cull_distance_index)));
+      builder_->createStore(
+          builder_->createTriOp(spv::OpSelect, type_float_, vertex_killed,
+                                builder_->makeFloatConstant(-1.0f),
+                                const_float_0_),
+          builder_->createAccessChain(spv::StorageClassOutput,
+                                      output_per_vertex_, id_vector_temp_));
+    } else {
+      // "or" operator - setting the position W to NaN kills the whole primitive
+      // if any of its vertices requests the kill.
+      position_w = builder_->createTriOp(
+          spv::OpSelect, type_float_, vertex_killed,
+          builder_->createUnaryOp(
+              spv::OpBitcast, type_float_,
+              builder_->makeUintConstant(UINT32_C(0x7FC00000))),
+          position_w);
+    }
+  }
+
   // Write the point size.
   if (output_point_size_ != spv::NoResult) {
     spv::Id point_size;
@@ -2246,14 +2320,16 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
   }
 
   // Fragment coordinates.
-  // TODO(Triang3l): More conditions - depth writing in the fragment shader
-  // (per-sample if supported).
   // FSI: Always needed for EDRAM offset calculation and depth derivatives.
   // param_gen: Needed for PsParamGen calculation.
   // FBO alpha-to-coverage: Needed for dithering pattern, but only when
   // alpha-to-coverage can actually run (no early fragment tests).
+  // FBO float24 in-PS conversion of the rasterizer's depth: reads
+  // gl_FragCoord.z
+  // - and must do so per-sample for MSAA antialiasing of intersections.
   bool need_frag_coord =
-      edram_fragment_shader_interlock_ || param_gen_needed ||
+      edram_fragment_shader_interlock_ || param_gen_needed || IsSampleRate() ||
+      DSV_IsApplyingPolygonOffset() ||
       (!edram_fragment_shader_interlock_ && !is_depth_only_fragment_shader_ &&
        current_shader().writes_color_target(0) &&
        !IsExecutionModeEarlyFragmentTests());
@@ -2262,11 +2338,18 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
         spv::NoPrecision, spv::StorageClassInput, type_float4_, "gl_FragCoord");
     builder_->addDecoration(input_fragment_coordinates_, spv::DecorationBuiltIn,
                             static_cast<int>(spv::BuiltIn::FragCoord));
+    if (IsSampleRate()) {
+      // Per the Vulkan spec, a Sample-decorated fragment input forces
+      // per-sample shader invocation - no explicit sampleShadingEnable needed.
+      builder_->addCapability(spv::CapabilitySampleRateShading);
+      builder_->addDecoration(input_fragment_coordinates_,
+                              spv::DecorationSample);
+    }
     main_interface_.push_back(input_fragment_coordinates_);
   }
 
   // Is front facing.
-  if (edram_fragment_shader_interlock_ ||
+  if (edram_fragment_shader_interlock_ || DSV_IsApplyingPolygonOffset() ||
       (param_gen_needed &&
        !GetSpirvShaderModification().pixel.param_gen_point)) {
     input_front_facing_ = builder_->createVariable(
@@ -2327,11 +2410,11 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
     }
   }
 
-  // Fragment depth output (gl_FragDepth) for the FBO path.
-  // Created when the guest pixel shader writes oDepth.
-  // FSI manages its own depth and does not need an Output.
-  if (!edram_fragment_shader_interlock_ && !is_depth_only_fragment_shader_ &&
-      current_shader().writes_depth()) {
+  // FBO fragment depth output. Used for guest oDepth, float24 conversion, and
+  // the narrow host RT decal path. FSI manages depth in EDRAM instead.
+  if (!edram_fragment_shader_interlock_ &&
+      (current_shader().writes_depth() || DSV_IsWritingFloat24Depth() ||
+       DSV_IsApplyingPolygonOffset())) {
     output_fragment_depth_ = builder_->createVariable(
         spv::NoPrecision, spv::StorageClassOutput, type_float_, "gl_FragDepth");
     builder_->addDecoration(output_fragment_depth_, spv::DecorationBuiltIn,
@@ -2424,6 +2507,24 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
     output_or_var_fragment_depth_ = builder_->createVariable(
         spv::NoPrecision, spv::StorageClassFunction, type_float_,
         "xe_var_fragment_depth", const_float_0_);
+  }
+
+  if (DSV_IsApplyingPolygonOffset()) {
+    // The decal path needs the original triangle depth slope, not the slope of
+    // whichever lanes survive guest control flow or kill.
+    assert_true(input_fragment_coordinates_ != spv::NoResult);
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(builder_->makeIntConstant(2));
+    main_fbo_depth_unbiased_ =
+        builder_->createLoad(builder_->createAccessChain(
+                                 spv::StorageClassInput,
+                                 input_fragment_coordinates_, id_vector_temp_),
+                             spv::NoPrecision);
+    builder_->addCapability(spv::CapabilityDerivativeControl);
+    main_fbo_depth_derivatives_[0] = builder_->createUnaryOp(
+        spv::OpDPdxCoarse, type_float_, main_fbo_depth_unbiased_);
+    main_fbo_depth_derivatives_[1] = builder_->createUnaryOp(
+        spv::OpDPdyCoarse, type_float_, main_fbo_depth_unbiased_);
   }
 
   if (edram_fragment_shader_interlock_ && FSI_IsDepthStencilEarly()) {

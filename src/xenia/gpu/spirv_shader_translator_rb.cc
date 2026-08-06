@@ -1517,28 +1517,161 @@ void SpirvShaderTranslator::CompleteFragmentShader_DSV_DepthTo24Bit() {
       output_fragment_depth_ == spv::NoResult) {
     return;
   }
-  if (!current_shader().writes_depth()) {
+  bool shader_writes_depth = current_shader().writes_depth();
+  bool is_float24 = DSV_IsWritingFloat24Depth();
+  bool apply_polygon_offset =
+      DSV_IsApplyingPolygonOffset() && !shader_writes_depth;
+  assert_true(shader_writes_depth || is_float24 || apply_polygon_offset);
+
+  // Source depth from guest oDepth, or from raster depth for float24 conversion
+  // and the host RT decal path.
+  spv::Id depth_value;
+  if (shader_writes_depth) {
+    depth_value =
+        builder_->createLoad(output_or_var_fragment_depth_, spv::NoPrecision);
+  } else {
+    spv::Id host_depth;
+    if (apply_polygon_offset) {
+      assert_true(input_front_facing_ != spv::NoResult);
+      assert_true(main_fbo_depth_unbiased_ != spv::NoResult);
+      assert_true(main_fbo_depth_derivatives_[0] != spv::NoResult);
+      assert_true(main_fbo_depth_derivatives_[1] != spv::NoResult);
+      auto load_system_constant_float = [&](SystemConstantIndex index) {
+        id_vector_temp_.clear();
+        id_vector_temp_.push_back(builder_->makeIntConstant(index));
+        return builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassUniform,
+                                        uniform_system_constants_,
+                                        id_vector_temp_),
+            spv::NoPrecision);
+      };
+      spv::Id depth_dx = builder_->createUnaryBuiltinCall(
+          type_float_, ext_inst_glsl_std_450_, GLSLstd450FAbs,
+          main_fbo_depth_derivatives_[0]);
+      spv::Id depth_dy = builder_->createUnaryBuiltinCall(
+          type_float_, ext_inst_glsl_std_450_, GLSLstd450FAbs,
+          main_fbo_depth_derivatives_[1]);
+      spv::Id depth_max_slope =
+          builder_->createBinBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                         GLSLstd450FMax, depth_dx, depth_dy);
+      spv::Id front_facing =
+          builder_->createLoad(input_front_facing_, spv::NoPrecision);
+      spv::Id poly_offset_scale = builder_->createTriOp(
+          spv::OpSelect, type_float_, front_facing,
+          load_system_constant_float(kSystemConstantEdramPolyOffsetFrontScale),
+          load_system_constant_float(kSystemConstantEdramPolyOffsetBackScale));
+      spv::Id poly_offset_offset = builder_->createTriOp(
+          spv::OpSelect, type_float_, front_facing,
+          load_system_constant_float(kSystemConstantEdramPolyOffsetFrontOffset),
+          load_system_constant_float(kSystemConstantEdramPolyOffsetBackOffset));
+      spv::Id poly_offset = builder_->createNoContractionBinOp(
+          spv::OpFAdd, type_float_,
+          builder_->createNoContractionBinOp(
+              spv::OpFMul, type_float_, depth_max_slope, poly_offset_scale),
+          poly_offset_offset);
+      host_depth = builder_->createNoContractionBinOp(
+          spv::OpFAdd, type_float_, main_fbo_depth_unbiased_, poly_offset);
+    } else {
+      assert_true(input_fragment_coordinates_ != spv::NoResult);
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(builder_->makeIntConstant(2));
+      host_depth = builder_->createLoad(
+          builder_->createAccessChain(spv::StorageClassInput,
+                                      input_fragment_coordinates_,
+                                      id_vector_temp_),
+          spv::NoPrecision);
+    }
+    if (is_float24) {
+      depth_value = builder_->createBinOp(spv::OpFMul, type_float_, host_depth,
+                                          builder_->makeFloatConstant(2.0f));
+      depth_value = builder_->createTriBuiltinCall(
+          type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp, depth_value,
+          const_float_0_, const_float_1_);
+    } else {
+      depth_value = host_depth;
+    }
+  }
+
+  if (!is_float24) {
+    if (!shader_writes_depth) {
+      builder_->createStore(depth_value, output_fragment_depth_);
+      return;
+    }
+    // Legacy path: shader writes oDepth, but the modification is not in float24
+    // mode (the host buffer may still be float24 if depth_float24_convert_in_
+    // pixel_shader is off - check dynamically via the system flag).
+    spv::Id depth_float24_flag = builder_->createBinOp(
+        spv::OpINotEqual, type_bool_,
+        builder_->createBinOp(
+            spv::OpBitwiseAnd, type_uint_, main_system_constant_flags_,
+            builder_->makeUintConstant(kSysFlag_DepthFloat24)),
+        const_uint_0_);
+    spv::Id depth_scaled =
+        builder_->createBinOp(spv::OpFMul, type_float_, depth_value,
+                              builder_->makeFloatConstant(0.5f));
+    spv::Id depth_remapped =
+        builder_->createTriOp(spv::OpSelect, type_float_, depth_float24_flag,
+                              depth_scaled, depth_value);
+    builder_->createStore(depth_remapped, output_fragment_depth_);
     return;
   }
-  assert_true(output_or_var_fragment_depth_ != spv::NoResult);
-  // The shader writes depth explicitly, for float24, need to scale it from
-  // guest 0...1 to host 0...0.5 to support reinterpretation round trips as
-  // viewport scaling doesn't apply to oDepth.
-  spv::Id depth_value =
-      builder_->createLoad(output_or_var_fragment_depth_, spv::NoPrecision);
-  spv::Id depth_float24_flag = builder_->createBinOp(
-      spv::OpINotEqual, type_bool_,
-      builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
-                            main_system_constant_flags_,
-                            builder_->makeUintConstant(kSysFlag_DepthFloat24)),
-      const_uint_0_);
-  spv::Id depth_scaled = builder_->createBinOp(
-      spv::OpFMul, type_float_, depth_value, builder_->makeFloatConstant(0.5f));
-  spv::Id depth_remapped =
-      builder_->createTriOp(spv::OpSelect, type_float_, depth_float24_flag,
-                            depth_scaled, depth_value);
-  // Write the depth from the temporary to the system depth output.
-  builder_->createStore(depth_remapped, output_fragment_depth_);
+  // Float24 mode: statically known float24 host buffer; perform the conversion.
+  Modification::DepthStencilMode mode =
+      GetSpirvShaderModification().pixel.depth_stencil_mode;
+  if (mode == Modification::DepthStencilMode::kFloat24Truncating ||
+      mode == Modification::DepthStencilMode::kFloat24TruncatingPolygonOffset) {
+    // Mantissa bit-truncation, then guest 0...1 -> host 0...0.5.
+    spv::Id depth_uint =
+        builder_->createUnaryOp(spv::OpBitcast, type_uint_, depth_value);
+    // Representable as float24 (exponent >= -34): bit pattern >= 0x2E800000.
+    spv::Id representable =
+        builder_->createBinOp(spv::OpUGreaterThanEqual, type_bool_, depth_uint,
+                              builder_->makeUintConstant(0x2E800000));
+    SpirvBuilder::IfBuilder representable_if(
+        representable, spv::SelectionControlDontFlattenMask, *builder_);
+    {
+      // Biased exponent: 113+ at exp -14+; 93 at exp -34.
+      spv::Id exponent = builder_->createTriOp(
+          spv::OpBitFieldUExtract, type_uint_, depth_uint,
+          builder_->makeUintConstant(23), builder_->makeUintConstant(8));
+      // trunc_bits = max(116 - exponent, 3), in signed - drops 3 mantissa bits
+      // at exp -14+ and 23 at exp -34. Must be signed: exponent > 116 (i.e.
+      // values larger than ~2^-11) makes 116 - exponent negative; an unsigned
+      // underflow would feed OpBitFieldInsert a Count > 32 (undefined).
+      spv::Id trunc_bits_signed = builder_->createBinOp(
+          spv::OpISub, type_int_, builder_->makeIntConstant(116),
+          builder_->createUnaryOp(spv::OpBitcast, type_int_, exponent));
+      trunc_bits_signed = builder_->createBinBuiltinCall(
+          type_int_, ext_inst_glsl_std_450_, GLSLstd450SMax, trunc_bits_signed,
+          builder_->makeIntConstant(3));
+      spv::Id trunc_bits = builder_->createUnaryOp(spv::OpBitcast, type_uint_,
+                                                   trunc_bits_signed);
+      spv::Id truncated_uint =
+          builder_->createQuadOp(spv::OpBitFieldInsert, type_uint_, depth_uint,
+                                 builder_->makeUintConstant(0),
+                                 builder_->makeUintConstant(0), trunc_bits);
+      spv::Id truncated_f32 =
+          builder_->createUnaryOp(spv::OpBitcast, type_float_, truncated_uint);
+      spv::Id remapped =
+          builder_->createBinOp(spv::OpFMul, type_float_, truncated_f32,
+                                builder_->makeFloatConstant(0.5f));
+      builder_->createStore(remapped, output_fragment_depth_);
+    }
+    representable_if.makeBeginElse();
+    {
+      // Not representable - zero.
+      builder_->createStore(const_float_0_, output_fragment_depth_);
+    }
+    representable_if.makeEndIf();
+  } else {
+    // kFloat24Rounding: round-trip through 20e4 (round to nearest even), with
+    // the 0...0.5 host remap baked in via remap_to_0_to_0_5 on Depth20e4To32.
+    spv::Id f24_uint = PreClampedDepthTo20e4(*builder_, depth_value, true,
+                                             false, ext_inst_glsl_std_450_);
+    spv::Id depth_f32 = Depth20e4To32(*builder_, f24_uint, 0, true, false,
+                                      ext_inst_glsl_std_450_);
+    builder_->createStore(depth_f32, output_fragment_depth_);
+  }
 }
 
 spv::Id SpirvShaderTranslator::LoadMsaaSamplesFromFlags() {

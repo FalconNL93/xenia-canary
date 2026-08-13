@@ -406,32 +406,51 @@ uint32_t XamUserReadProfileSettingsEx(
       }
     }
 
+    // 58411442 expects the settings to be in contiguous memory.
+    //
+    // Memory Layout:
+    // X_USER_READ_PROFILE_SETTINGS
+    // X_USER_PROFILE_SETTING[valid_requested_settings_ids * xuid_count]
+    // X_USER_PROFILE_SETTING::data[]
+
     // The order of xuids isn't preserved.
     user_settings_map users_settings = local_user_settings;
     users_settings.merge(remote_user_settings);
 
-    auto out_header = reinterpret_cast<X_USER_READ_PROFILE_SETTINGS*>(buffer);
+    std::memset(buffer, 0, buffer_size);
+
+    X_USER_READ_PROFILE_SETTINGS* profile_settings_results_ptr =
+        reinterpret_cast<X_USER_READ_PROFILE_SETTINGS*>(buffer);
+
+    X_USER_PROFILE_SETTING* profile_settings_ptr =
+        reinterpret_cast<X_USER_PROFILE_SETTING*>(profile_settings_results_ptr +
+                                                  1);
+
+    const uint32_t total_settings_count = static_cast<uint32_t>(
+        total_profile_xuids.size() * valid_requested_settings_ids.size());
+
+    uint8_t* additional_data_ptr =
+        reinterpret_cast<uint8_t*>(profile_settings_ptr + total_settings_count);
+
+    uint32_t additional_data_buffer_ptr =
+        kernel_state()->memory()->HostToGuestVirtual(
+            std::to_address(additional_data_ptr));
+
+    profile_settings_results_ptr->setting_count =
+        static_cast<uint32_t>(valid_requested_settings_ids.size());
+    profile_settings_results_ptr->settings_ptr =
+        kernel_state()->memory()->HostToGuestVirtual(
+            std::to_address(profile_settings_ptr));
+
+    uint32_t setting_index = 0;
 
     // Maintain XUIDs and setting ids order.
     for (const uint64_t xuid : total_profile_xuids) {
-      std::memset(out_header, 0, sizeof(X_USER_READ_PROFILE_SETTINGS));
-
-      auto out_setting =
-          reinterpret_cast<X_USER_PROFILE_SETTING*>(out_header + 1);
-
-      std::fill_n(out_setting, setting_count, X_USER_PROFILE_SETTING{});
-
-      out_header->setting_count =
-          static_cast<uint32_t>(valid_requested_settings_ids.size());
-      out_header->settings_ptr = kernel_state()->memory()->HostToGuestVirtual(
-          std::to_address(out_setting));
-
-      uint32_t additional_data_buffer_ptr =
-          out_header->settings_ptr +
-          (setting_count * sizeof(X_USER_PROFILE_SETTING));
-
       // Maintain requested settings id order.
       for (const xam::UserSettingId setting_id : valid_requested_settings_ids) {
+        X_USER_PROFILE_SETTING& profile_setting =
+            profile_settings_ptr[setting_index];
+
         const uint32_t setting_id_val = static_cast<uint32_t>(setting_id);
         uint32_t setting_title_id = titleId;
 
@@ -476,24 +495,25 @@ uint32_t XamUserReadProfileSettingsEx(
 
         xam::UserSetting setting = *it;
 
-        out_setting->setting_id = setting.get_setting_id();
-        out_setting->source = setting.get_setting_source();
+        profile_setting.setting_id = setting.get_setting_id();
+        profile_setting.source = setting.get_setting_source();
 
-        setting.WriteToGuest(out_setting, additional_data_buffer_ptr);
-
-        if (xuids) {
-          out_setting->xuid = xuid;
-        } else {
-          out_setting->user_index = user_index;
+        if (setting.requires_additional_data()) {
+          profile_setting.data.data.binary.ptr =
+              kernel_state()->memory()->HostToGuestVirtual(
+                  std::addressof(additional_data_ptr));
         }
 
-        out_setting++;
-      }
+        setting.WriteToGuest(&profile_setting, additional_data_buffer_ptr);
 
-      // Next profile settings header
-      out_header =
-          kernel_memory()->TranslateVirtual<X_USER_READ_PROFILE_SETTINGS*>(
-              additional_data_buffer_ptr);
+        if (xuids) {
+          profile_setting.xuid = xuid;
+        } else {
+          profile_setting.user_index = user_index;
+        }
+
+        setting_index++;
+      }
     }
 
     return X_ERROR_SUCCESS;
@@ -1080,11 +1100,22 @@ dword_result_t XamParseGamerTileKey_entry(pointer_t<X_USER_DATA> key_ptr,
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  const std::string tile_key = xe::to_utf8(string_util::read_u16string_and_swap(
+  const char16_t* title_key_ptr =
       kernel_memory()->TranslateVirtual<const char16_t*>(
-          key_ptr->data.unicode.ptr)));
+          key_ptr->data.unicode.ptr);
 
-  if (tile_key.empty() || tile_key.size() != sizeof(GamerPictureKey)) {
+  std::vector<char16_t> tile_key_data(sizeof(GamerPictureKey) + 1);
+
+  // 584109DB doesn't include the null terminator.
+  xe::string_util::copy_and_swap_truncating(tile_key_data.data(), title_key_ptr,
+                                            sizeof(GamerPictureKey) + 1);
+
+  // Remove null terminator.
+  tile_key_data.pop_back();
+
+  const std::string tile_key = xe::to_utf8(tile_key_data.data());
+
+  if (tile_key.empty()) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
@@ -1252,16 +1283,14 @@ dword_result_t XamReadTileToTextureEx_entry(
         &height, &channels, STBI_rgb_alpha);
 
     const size_t icon_dimmension_size = size_t(width) * size_t(height);
-    for (int i = 0; i < icon_dimmension_size; i++) {
-      unsigned char* pixel = &imageData[i * sizeof(uint32_t)];
 
-      // RGBA to ARGB. TODO: Find faster method!
-      // RGBA->AGBR
-      std::swap(pixel[0], pixel[3]);
-      // AGBR->ARBG
-      std::swap(pixel[1], pixel[3]);
-      // ARBG->ARGB
-      std::swap(pixel[2], pixel[3]);
+    // Efficent RGBA -> ARGB conversion:
+    // This moves R,G,B left by 8 bits and places A into the low byte.
+    uint32_t* pixels = reinterpret_cast<uint32_t*>(imageData);
+
+    for (size_t i = 0; i < icon_dimmension_size; i++) {
+      uint32_t pixel = pixels[i];
+      pixels[i] = ((pixel & 0x00FFFFFFu) << 8) | (pixel >> 24);
     }
 
     const size_t row_size_bytes = width * sizeof(uint32_t);

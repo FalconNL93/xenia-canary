@@ -257,6 +257,7 @@ class Emulator {
 
     std::string name_{};
     std::filesystem::path path_;
+    std::filesystem::path filename_;
     std::filesystem::path data_installation_path_;
     std::filesystem::path header_installation_path_;
 
@@ -281,6 +282,9 @@ class Emulator {
   X_STATUS InstallContentPackage(const std::filesystem::path& path,
                                  ContentInstallEntry& installation_info);
 
+  X_STATUS ExtractContentPackage(const std::filesystem::path& path,
+                                 ContentInstallEntry& installation_info);
+
   // Extract content of zar package to desired directory.
   X_STATUS ExtractZarchivePackage(const std::filesystem::path& path,
                                   const std::filesystem::path& extract_dir);
@@ -303,6 +307,8 @@ class Emulator {
 
   // The game can request another title to be loaded.
   const std::filesystem::path GetNewDiscPath(std::string window_message = "");
+  // Builds and runs the picker itself. UI thread only.
+  const std::filesystem::path ShowDiscPicker(std::string window_message);
 
   void WaitUntilExit();
 

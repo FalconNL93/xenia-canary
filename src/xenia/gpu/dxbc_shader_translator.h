@@ -114,7 +114,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
     // If anything in this is structure is changed in a way not compatible with
     // the previous layout, invalidate the pipeline storages by increasing this
     // version number (0xYYYYMMDD)!
-    static constexpr uint32_t kVersion = 0x20260803;
+    static constexpr uint32_t kVersion = 0x20260819;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -418,6 +418,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
     // bits 0:3 = component_bits - 1
     // bit 4 = signed
     // bit 5 = unsigned-biased
+    // bit 24 = normalized
     // Zero means no scale.
     uint32_t texture_integer_scale_bits[32];
 
@@ -995,6 +996,10 @@ class DxbcShaderTranslator : public ShaderTranslator {
       const ParsedAluInstruction& instr,
       uint8_t memexport_eM_potentially_written_before, uint32_t& result_swizzle,
       bool& predicate_written);
+  // Reduces finite host approximations to a chosen mantissa width.
+  // We still don't know the exact precision or rounding.
+  void ReduceFloatPrecision(const dxbc::Dest& dest, const dxbc::Src& value,
+                            uint32_t mantissa_bits);
   void ProcessScalarAluOperation(
       const ParsedAluInstruction& instr,
       uint8_t memexport_eM_potentially_written_before, bool& predicate_written);
